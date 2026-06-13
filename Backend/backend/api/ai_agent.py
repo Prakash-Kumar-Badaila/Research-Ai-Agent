@@ -10,7 +10,7 @@ from langgraph.types import Send
 from typing import TypedDict, Annotated, Literal, Optional
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
-from langchain_tavily import TavilySearch
+
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.types import Send
 import operator
@@ -317,8 +317,11 @@ final_model = base_graph.compile(checkpointer=checkpointer)
 
 # %% [code] Cell 44
 
-
 def generate_response(query):
-            for message, metadata in final_model.stream({'messages' : [HumanMessage(content= query)]}, stream_mode= 'messages', config=config):
-                if message.content:
-                     yield(message.content, end= "", flush=True)
+    for message, metadata in final_model.stream(
+        {'messages': [HumanMessage(content=query)]},
+        stream_mode='messages',
+        config=config
+    ):
+        if message.content:
+            yield message.content
