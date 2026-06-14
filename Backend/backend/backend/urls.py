@@ -16,9 +16,9 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path,include
-from api.views import stream_text , ai_call
+from api.views import  ai_call
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path("stream/",stream_text),
+    # path("stream/",stream_text),
     path("ai_call/",ai_call)
 ]
