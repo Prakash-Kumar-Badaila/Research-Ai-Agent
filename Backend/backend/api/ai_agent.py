@@ -5,7 +5,7 @@ Converted from IPYNB to PY
 
 # %% [code] Cell 1
 from langchain_ollama import ChatOllama
-from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
+from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage,  AIMessage
 from langgraph.types import Send
 from typing import TypedDict, Annotated, Literal, Optional
 from pydantic import BaseModel, Field
@@ -72,6 +72,7 @@ planner_model = model.with_structured_output(Plan)
 
 # %% [code] Cell 10
 search_tool = TavilySearchResults(max_results= 8)
+simple_search = TavilySearchResults(max_results  = 2)
 
 # %% [code] Cell 11
 @tool
@@ -100,7 +101,15 @@ def deep_research(query):
     return outputs
 
 
+
+@tool
+def internet_search(query):
+    """
+    Use this tool when you need to do simple internet search
+    """
     
+
+    return simple_search.invoke(query)
 
 # %% [code] Cell 12
 writer_model = model
@@ -281,7 +290,7 @@ class BaseState(TypedDict):
     messages : Annotated[list[BaseMessage], add_messages]
 
 # %% [code] Cell 35
-all_tools = [deep_research, researcher]
+all_tools = [deep_research, researcher, internet_search]
 base_model = model.bind_tools(all_tools)
 
 
@@ -323,5 +332,6 @@ def generate_response(query):
         stream_mode='messages',
         config=config
     ):
-        if message.content:
-            yield message.content
+        if isinstance(message, AIMessage):
+            if message.content:
+                yield message.content
