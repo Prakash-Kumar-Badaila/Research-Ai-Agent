@@ -1,337 +1,193 @@
-# -*- coding: utf-8 -*-
-"""
-Converted from IPYNB to PY
-"""
+# Generated from: best_research_agent.ipynb
+# Converted at: 2026-06-27T10:06:23.936Z
+# Next step (optional): refactor into modules & generate tests with RunCell
+# Quick start: pip install runcell
 
-# %% [code] Cell 1
 from langchain_ollama import ChatOllama
-from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage,  AIMessage
-from langgraph.types import Send
-from typing import TypedDict, Annotated, Literal, Optional
-from pydantic import BaseModel, Field
+from typing  import Annotated, TypedDict
+from pydantic import BaseModel
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessageChunk
 from dotenv import load_dotenv
-
-from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_community.tools import TavilySearchResults
+from langgraph.graph import StateGraph, START, END
+from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.checkpoint.memory import InMemorySaver
+from langchain_core.tools import tool
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 from langgraph.types import Send
 import operator
 from pathlib import Path
-from langgraph.graph import StateGraph, START, END
-import requests
-from langchain_core.tools import tool
-from langgraph.prebuilt import ToolNode, tools_condition
-from bs4 import BeautifulSoup
-from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import InMemorySaver
 
-# %% [code] Cell 2
-load_dotenv()
+CONTEXT_GATHERER_SYSTEM_PROMPT = None
+SYNTHESIZER_SYSTEM_PROMPT = None
+PLANNER_SYSTEM_PROMPT = None
+WORKER_SYSTEM_PROMPT = None
 
-# %% [code] Cell 3
-class ResearchStructure(BaseModel):
-    research_needed : bool = Field(default= False, description= "Tell internet research is need or not, False if model can generate answer on its own by parametric knowlege true if model needs to do some research")
-    queries : list[str] = Field(default= None, description="If model needs to do some research, list of all queries that needs to be sent to a search engine to get the knowledege required  for an LLM to write blog")
+with open('context_gatherer_system_prompt.txt', "r") as f:
+    CONTEXT_GATHERER_SYSTEM_PROMPT = f.read()
 
-# %% [code] Cell 4
-class Evidence(BaseModel):
-    id : int
-    title : str
-    url : str = Field(description="Url from where you got the information")
-    content : str = Field(description= "Actual content of the research")
-    published_date :Optional[str] = Field(description= "Date of contain")
+with open('synthesizer_system_prompt.txt', "r") as f:
+    SYNTHESIZER_SYSTEM_PROMPT = f.read()
+
+with open('planner_system_prompt.txt', "r") as f:
+    PLANNER_SYSTEM_PROMPT = f.read()
+
+with open('worker_system_prompt.txt', "r") as f:
+    WORKER_SYSTEM_PROMPT = f.read()  
     
 
-# %% [code] Cell 5
-class EvidencePack(BaseModel):
-    evidences : list[Evidence]
+model = ChatOllama(model = 'gpt-oss:120b-cloud')
 
-# %% [code] Cell 6
+class GeneralResearcherSchema(BaseModel):
+    queries : list[str]
+
+    
 class Task(BaseModel):
     id : int
-    section_head : str = Field(description="Name of the section")
-    section_desc : str = Field(description= "Description of what to include in that section ")
+    title : str
+    description : str
+    search_queries : list[str]
 
-# %% [code] Cell 7
-class Plan(BaseModel):
+class PlannerSchema(BaseModel):
     plans : list[Task]
 
-# %% [code] Cell 8
-class BlogState(TypedDict):
-    topic : str
-    research_needed  : bool
-    research_queries : list[str]
-    plans : Plan
-    sections : Annotated[list[str],operator.add]
-    final : str
-    evidences : EvidencePack
+class ResearchState(TypedDict):
+    title : str
+    initial_search_queries : str
+    planner_input : str
+    plans : list[Task]
+    sections : Annotated[list[str], operator.add]
 
-# %% [code] Cell 9
-model = ChatOllama(model = 'qwen2.5:7b')
-resarch_check_model = model.with_structured_output(ResearchStructure)
-evidence_model = model.with_structured_output(EvidencePack)
-planner_model = model.with_structured_output(Plan)
+generalresearcher  = model.with_structured_output(GeneralResearcherSchema)
 
-# %% [code] Cell 10
-search_tool = TavilySearchResults(max_results= 8)
-simple_search = TavilySearchResults(max_results  = 2)
+def context_gatherer(state):
 
-# %% [code] Cell 11
-@tool
-def deep_research(query):
-    """
-    Use this tool when you don't know any topic or know very little about that topic and want to do a deep research about that
-    """
-    outputs = []
-    out = search_tool.invoke(query)
-
- 
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36'}
-
-    for item in out:
-        content  = requests.get(item['url'], headers= headers)
-        soup = BeautifulSoup(content.text, "html.parser")
-
-        for tag in soup(["script", "style", "noscript", "header", "footer", "nav", "aside"]):
-            tag.decompose()
-
-        # Extract clean text
-        text = soup.get_text(separator="\n", strip=True)
-
-        outputs.append(text)
-
-    return outputs
+  out = generalresearcher.invoke([SystemMessage(content = CONTEXT_GATHERER_SYSTEM_PROMPT), HumanMessage(content= state['title'])])
+  return {'initial_search_queries': out.queries}
 
 
-
-@tool
-def internet_search(query):
-    """
-    Use this tool when you need to do simple internet search
-    """
-    
-
-    return simple_search.invoke(query)
-
-# %% [code] Cell 12
-writer_model = model
+search_tool = TavilySearchResults(max_results= 5)
 
 
-# %% [code] Cell 13
-def research_checker(state : BlogState):
+def synthesizer(state):
+  results = []
 
-    output = resarch_check_model.invoke([SystemMessage(content= "A same LLM like you is going to write a blog, You are a research check model , You check whether the LLM can write blog on its own or it needs some research from the internet. If the topic is not latest enough or already availabe in LLM paramteric knowledge you return False, but if that knowledge is not available in LLM parametric knowledge you return True and also return a set of search queries that LLM can search in a search engine to know a lot of knowledge to write a good blog, You return best queries that LLM can use to generate answer"), HumanMessage(content = f"Your topic is {state['topic']} check whether you need to do resarch or not if yes also list of best queries , Note: Only say research is needed if that information is not stored in your parametric knowledge") ])
+  for item in state['initial_search_queries']:
+      results.append(search_tool.invoke(item))
+  clean_results = []
+  for result_group in results:
+      for r in result_group:
+          if isinstance(r, dict) and 'content' in r:
+              clean_results.append(r['content'])
+          elif isinstance(r, str):
+              clean_results.append(r)
+  combined_text = '\n---\n'.join(clean_results)
 
-    return {
-        'research_needed' : output.research_needed,
-        'research_queries' : output.queries,
-    }
+  sythesizer_output = model.invoke([SystemMessage(content = SYNTHESIZER_SYSTEM_PROMPT), HumanMessage(content = f"""RESEARCH TOPIC: {state['title']}
 
-# %% [code] Cell 14
-def router(state : BlogState):
-    return 'internet_searcher' if state['research_needed'] else 'planner'
+SEARCH RESULTS:
+{combined_text}""")])
 
-# %% [code] Cell 15
-def internet_searcher(state : BlogState):
-    items  = []
-    for item in state['research_queries']:
-        items.append(search_tool.invoke(item))
+  return{'planner_input' : sythesizer_output.content}
 
-    print(items)
 
-    SYSTEM_PROMPT = "You are an AI model which converts unstructured Internet research to structured_format with same content"
+planner_model = model.with_structured_output(PlannerSchema)
 
-    result =  evidence_model.invoke([SystemMessage(content = SYSTEM_PROMPT), HumanMessage(content = f"Convert this unstructued content to structured, make sure that there is no information Loss  {items}")])
-    return {
-        'evidences' : result
-    }
+def planner(state):
 
-# %% [code] Cell 16
-def planner(state: BlogState):
-    SYSTEM_PROMPT = """
-    You are an AI model that generates blog sections.
-    Consider any available research evidence.
-    """
+  response = planner_model.invoke([SystemMessage(content = PLANNER_SYSTEM_PROMPT), HumanMessage(content = f"""RESEARCH TOPIC: {state['title']}
 
-    evidences = state.get("evidences", "not available")
+SYNTHESIZED CONTEXT:
+{state['planner_input']}""")])
 
-    result = planner_model.invoke([
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(
-            content=f"""
-Generate plans for topic:
-{state['topic']}
+  return {'plans' : response.plans}
 
-Research:
-{evidences}
-"""
-        )
-    ])
 
-    return {"plans": result}
+def fanout(state):
+    all_plans = state['plans']
+    return [Send('worker', {'topic' : state['title'], 'id' : task.id, 'title': task.title, 'description' : task.description, 'queries' : task.search_queries, 'plans' : all_plans}) for task in all_plans]
 
-# %% [code] Cell 17
-# result = research_checker({
-#     'topic' : "New advancements in ai in 2026"
-# })
-
-# %% [code] Cell 18
-# result
-
-# %% [code] Cell 19
-# result = internet_searcher({
-#     'research_queries': ['New advancements in AI in 2026',
-#   'AI breakthroughs and trends for 2026',
-#   'Future developments in artificial intelligence 2026',
-#   'Predictions for AI technology in 2026',
-#   'Upcoming innovations in AI by 2026']
-# })
-
-# %% [code] Cell 20
-# result
-
-# %% [code] Cell 21
-# result = planner({
-#     'topic' : "New advancements in ai in 2026",
-#     'evidences' : result
-# })
-
-# %% [code] Cell 22
-# result['plans'].plans
-
-# %% [code] Cell 23
-def fanout(state: BlogState):
-    return ([Send("worker", {'task' : task, 'topic' : state['topic'], 'plans' : state['plans']})
-             for task in state['plans'].plans])
-
-# %% [code] Cell 24
-# def fanout(state: BlogState):
-#     # return ([Send("worker", {'task' : task, 'topic' : state['topic'], 'plan' : state['plans']})
-#              for task in state['plans'].task])
-
-# %% [code] Cell 25
 def worker(payload : dict):
-    task = payload['task']
+    idx = payload['id']
     topic = payload['topic']
-    plan = payload['plans']
+    title = payload['title']
+    desc = payload['description']
+    queries = payload['queries']
+    plans = payload['plans']
+
+    raw_results = []
+    for query in queries:
+        raw_results.extend(search_tool.invoke(query))
+
+    evidence = []
+    for r in raw_results:
+        if isinstance(r, dict) and 'content' in r:
+            evidence.append(r['content'])
+        elif isinstance(r, str):
+            evidence.append(r)
+    evidence_text = '\n---\n'.join(evidence)
+
+    plan_summary = '\n'.join([f"Section {p.id}: {p.title}" for p in plans])
+
+    response = model.invoke([SystemMessage(content = WORKER_SYSTEM_PROMPT), HumanMessage(content = f"""RESEARCH TOPIC: {topic}
+
+YOUR ASSIGNED SECTION: {title}
+SECTION DESCRIPTION: {desc}
+
+FULL REPORT PLAN (for context only — write ONLY your assigned section):
+{plan_summary}
+
+SEARCH EVIDENCE:
+{evidence_text}""")])
+
+    return {'sections' : [{'idx' : idx ,'content' : response.content}]}
 
 
-    result = model.invoke([SystemMessage(content= "Write one clean markdown section for each topic"),
-                           HumanMessage(content= 
-                                        f"topic : {topic}"
-                                        f"task {task.section_head}" 
-                                        f"descroption = {task.section_desc}"
-                                        f"Full plan : {plan}"
-                                        "Write just one markdown section for the task"
-                                        )
-                           
-                           ])
-    
+def reducer(state):
+    title = state['title']
 
-    return {"sections" : [result.content]}
+    ordered_sections = sorted(
+        state['sections'],
+        key=lambda x: x['idx']
+    )
 
-# %% [code] Cell 26
-# each_result = worker({
-#     'task' : Task(id=1, section_head='Introduction to Key Predictions in 2026', section_desc='Provide a brief introduction to the main predictions and trends for AI in 2026, citing key evidence sources. This section will set the stage for further detailed discussion.'),
-#     'topic' : " New advancements in ai in 2026",
-#     'plans' :result
-    
+    body = "\n\n".join(
+        section['content']
+        for section in ordered_sections
+    )
 
-# })
+    final_md = f"# {title}\n\n{body}\n"
 
-# %% [code] Cell 27
-def reducer(state : BlogState):
-        title = state['topic']
-        body = '\n\n'.join(state['sections']).strip()
-        body  = model.invoke(f"Refine this markdown and make it look professional, structure this content and make sure that it looks like it is written by a proffesional\n {body}").content
-        final_md  = f"#{title} \n\n{body}\n"
+    file_name = title.lower().replace(" ", "_") + ".md"
+    output_path = Path(file_name)
+    output_path.write_text(final_md, encoding="utf-8")
 
-        file_name = title.lower().replace(" ", "_") + ".md"
-        output_path = Path(file_name)
-        output_path.write_text(final_md, encoding= 'utf-8')
-        return {'final' : final_md}
-        
-        
+    return {"final": final_md}
 
-# %% [code] Cell 28
-graph = StateGraph(BlogState)
-graph.add_node('research_checker', research_checker)
-graph.add_node('researcher', internet_searcher)
+graph = StateGraph(ResearchState)
+graph.add_node('context_gatherer', context_gatherer)
+graph.add_node('synthesizer', synthesizer)
 graph.add_node('planner', planner)
 graph.add_node('worker', worker)
 graph.add_node('reducer', reducer)
 
 
-# %% [code] Cell 29
-
-graph.add_edge(START, 'research_checker')
-graph.add_conditional_edges('research_checker', router, {'internet_searcher': 'researcher', 'planner' : 'planner'})
-graph.add_edge('researcher', 'planner')
+graph.add_edge(START, 'context_gatherer')
+graph.add_edge('context_gatherer', 'synthesizer')
+graph.add_edge('synthesizer', 'planner')
 graph.add_conditional_edges('planner', fanout, ['worker'])
 graph.add_edge('worker', 'reducer')
-
 graph.add_edge('reducer',END )
 
-# %% [code] Cell 30
-app = graph.compile()
-
-# %% [code] Cell 31
-# app
-
-# %% [code] Cell 32
-@tool
-def researcher(topic):
-    """
-        Give research topic and it generates blog in markdown file on your folder
-
-    """
-    app.invoke({'topic' : topic})
-
-# %% [code] Cell 33
-class BaseState(TypedDict):
-    messages : Annotated[list[BaseMessage], add_messages]
-
-# %% [code] Cell 35
-all_tools = [deep_research, researcher, internet_search]
-base_model = model.bind_tools(all_tools)
-
-
-# %% [code] Cell 36
-def chat_model(state):
-    response = base_model.invoke(state['messages'])
-    return {'messages' : [response]}
-
-# %% [code] Cell 37
-base_graph = StateGraph(BaseState)
-
-# %% [code] Cell 38
-base_graph.add_node('chat_model', chat_model)
-
-# %% [code] Cell 39
-base_graph.add_node('tools', ToolNode(all_tools))
-
-# %% [code] Cell 40
-base_graph.add_edge(START, 'chat_model')
-base_graph.add_conditional_edges('chat_model', tools_condition)
-base_graph.add_edge('tools', 'chat_model')
-base_graph.add_edge('chat_model', END)
-
-# %% [code] Cell 41
 checkpointer = InMemorySaver()
-config = {'configurable' : {'thread_id' : "1"}}
+config = {'configurable' : {'thread_id' : "1000"}} 
 
-# %% [code] Cell 42
-final_model = base_graph.compile(checkpointer=checkpointer)
+research_model = graph.compile(checkpointer= checkpointer)
 
-# %% [code] Cell 43
-# final_model
 
-# %% [code] Cell 44
 
-def generate_response(query):
-    for message, metadata in final_model.stream(
-        {'messages': [HumanMessage(content=query)]},
-        stream_mode='messages',
-        config=config
-    ):
-        if isinstance(message, AIMessage):
-            if message.content:
-                yield message.content
+def generate_response(title):
+    for item in research_model.stream({'title' : title}, config= config, stream_mode= 'updates'):
+        return item
