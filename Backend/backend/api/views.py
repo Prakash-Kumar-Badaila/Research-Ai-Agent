@@ -1,5 +1,5 @@
 from django.shortcuts import render
-# from .ai_agent import generate_response
+from .ai_agent import generate_output
 from django.views.decorators.csrf import csrf_exempt
 
 
@@ -8,19 +8,19 @@ from django.views.decorators.csrf import csrf_exempt
 from django.http import StreamingHttpResponse
 import time
 
-@csrf_exempt
-def ai_call(request):
-    text = "Hello from Django streaming response"
-    def generate ():
-        for char in text:
-            yield char
-            time.sleep(0.1)
-    return StreamingHttpResponse(generate(),content_type ="text/plain")
-
 # @csrf_exempt
 # def ai_call(request):
-#     query = request.POST.get('query')
+#     text = "Hello from Django streaming response"
+#     def generate ():
+#         for char in text:
+#             yield char
+#             time.sleep(0.1)
+#     return StreamingHttpResponse(generate(),content_type ="text/plain")
 
-#     return StreamingHttpResponse(generate_response(query), content_type="text/plain")
+@csrf_exempt
+def ai_call(request):
+    query = request.POST.get('query')
+
+    return StreamingHttpResponse(generate_output(query), content_type="text/plain")
 
 

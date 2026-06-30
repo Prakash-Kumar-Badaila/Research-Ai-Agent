@@ -1,0 +1,33 @@
+{
+    "playwright": {
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+            "@playwright/mcp@latest"
+        ]
+    },
+    "filesystem": {
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+            "-y",
+            "@modelcontextprotocol/server-filesystem",
+            "C/"
+        ]
+    },
+    "sequential-thinking": {
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+            "-y",
+            "@modelcontextprotocol/server-sequential-thinking"
+        ]
+    },
+    "desktop-commander": {
+        "transport": "stdio",
+        "command": "desktop-commander",
+        "args": [
+            "--no-onboarding"
+        ]
+    }
+}
